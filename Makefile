@@ -1,22 +1,65 @@
-# Build the tflite_nif as a NIF .so for Mac (host) or Android arm64.
+# nx_tflite_mob — cross-compile tflite_nif.c for desktop & mobile targets.
 #
-# Mac uses an x86_64/arm64-universal libtensorflowlite_jni.so — not
-# normally shipped. For the host smoke test, the easier path is to
-# build against the pip-installed runtime (TODO). For now this Makefile
-# focuses on the Android cross-compile path, which is what we actually
-# ship inside a Mob app.
+# Two output flavors per target:
+#   priv/<target>/libtflite_nif.so   — dynamic .so for standalone iex / bench
+#                                       (android only; iOS forbids dlopen)
+#   priv/<target>/libtflite_nif.a    — static archive for Mob's static-NIF
+#                                       table (linked into launcher binary)
+#
+# Targets:
+#   android         — android_arm64 .so + .a (NNAPI + XNNPACK)
+#   ios_device      — ios_device .a (CoreML + Metal + XNNPACK)
+#   ios_sim         — ios_sim .a (XNNPACK only — simulator has no ANE)
+#   all_mobile      — android + ios_device + ios_sim
 
 ERLANG_PATH := $(shell erl -noshell -eval 'io:format("~s/erts-16.4/include", [code:root_dir()])' -s init stop)
-TFLITE_AAR  := /tmp/tflite_android/aar
-TFLITE_HDRS := $(TFLITE_AAR)/headers
 
-ANDROID_NDK ?= /Users/kevin/Library/Android/sdk/ndk/27.2.12479018
-NDK_HOST     := darwin-x86_64
-NDK_CC       := $(ANDROID_NDK)/toolchains/llvm/prebuilt/$(NDK_HOST)/bin/aarch64-linux-android29-clang
-TFLITE_SO    := $(TFLITE_AAR)/jni/arm64-v8a/libtensorflowlite_jni.so
+# ── Android ────────────────────────────────────────────────────────────────
+ANDROID_NDK    ?= /Users/kevin/Library/Android/sdk/ndk/27.2.12479018
+NDK_HOST       := darwin-x86_64
+NDK_CC         := $(ANDROID_NDK)/toolchains/llvm/prebuilt/$(NDK_HOST)/bin/aarch64-linux-android29-clang
+NDK_AR         := $(ANDROID_NDK)/toolchains/llvm/prebuilt/$(NDK_HOST)/bin/llvm-ar
+NDK_RANLIB     := $(ANDROID_NDK)/toolchains/llvm/prebuilt/$(NDK_HOST)/bin/llvm-ranlib
+TFLITE_AAR     := /tmp/tflite_android/aar
+TFLITE_HDRS    := $(TFLITE_AAR)/headers
+TFLITE_SO      := $(TFLITE_AAR)/jni/arm64-v8a/libtensorflowlite_jni.so
 
-priv/android/libtflite_nif.so: c_src/tflite_nif.c
-	@mkdir -p priv/android
+# ── iOS ────────────────────────────────────────────────────────────────────
+IOS_MIN_VER    := 15.0
+TFLITE_IOS_DIR := /tmp/tflite_ios/extracted/TensorFlowLiteC-2.17.0/Frameworks
+# xcframework slices — one path per slice (device / simulator-arm64).
+IOS_DEVICE_FW  := $(TFLITE_IOS_DIR)/TensorFlowLiteC.xcframework/ios-arm64
+IOS_SIM_FW     := $(TFLITE_IOS_DIR)/TensorFlowLiteC.xcframework/ios-arm64_x86_64-simulator
+IOS_DEVICE_CML := $(TFLITE_IOS_DIR)/TensorFlowLiteCCoreML.xcframework/ios-arm64
+IOS_SIM_CML    := $(TFLITE_IOS_DIR)/TensorFlowLiteCCoreML.xcframework/ios-arm64_x86_64-simulator
+
+IOS_DEV_SDK    := $(shell xcrun --sdk iphoneos --show-sdk-path)
+IOS_SIM_SDK    := $(shell xcrun --sdk iphonesimulator --show-sdk-path)
+IOS_CC         := $(shell xcrun --find clang)
+IOS_AR         := $(shell xcrun --find ar)
+IOS_RANLIB     := $(shell xcrun --find ranlib)
+
+# ── Common ─────────────────────────────────────────────────────────────────
+SRC            := c_src/tflite_nif.c
+
+# Symbol name for the static NIF table. Mob's driver_tab references
+# `tflite_nif_init` (see MobDev.StaticNifs default entry).
+STATIC_NIF_DEF := -DSTATIC_ERLANG_NIF_LIBNAME=tflite_nif
+
+# ============================================================================
+# Targets
+# ============================================================================
+
+.PHONY: android ios_device ios_sim all_mobile clean
+
+all_mobile: android ios_device ios_sim
+
+# ── Android ────────────────────────────────────────────────────────────────
+
+android: priv/android_arm64/libtflite_nif.so priv/android_arm64/libtflite_nif.a
+
+priv/android_arm64/libtflite_nif.so: $(SRC)
+	@mkdir -p $(@D)
 	$(NDK_CC) -O2 -Wall -fPIC -shared \
 	    -I$(ERLANG_PATH) \
 	    -I$(TFLITE_HDRS) \
@@ -28,7 +71,62 @@ priv/android/libtflite_nif.so: c_src/tflite_nif.c
 	    -o $@
 	@echo "built $@"
 
-android: priv/android/libtflite_nif.so
+priv/android_arm64/libtflite_nif.a: $(SRC)
+	@mkdir -p $(@D)
+	$(NDK_CC) -O2 -Wall -fPIC -c \
+	    $(STATIC_NIF_DEF) \
+	    -I$(ERLANG_PATH) \
+	    -I$(TFLITE_HDRS) \
+	    $< -o $(@D)/tflite_nif.o
+	$(NDK_AR) rcs $@ $(@D)/tflite_nif.o
+	$(NDK_RANLIB) $@
+	@echo "built $@ ($$($(NDK_AR) -t $@ | wc -l) members)"
+	@$(ANDROID_NDK)/toolchains/llvm/prebuilt/$(NDK_HOST)/bin/llvm-nm $@ | grep tflite_nif_nif_init || (echo "ERROR: tflite_nif_nif_init symbol missing!" && exit 1)
+
+# Backwards-compat: old layout had priv/android/libtflite_nif.so
+priv/android/libtflite_nif.so: priv/android_arm64/libtflite_nif.so
+	@mkdir -p $(@D) && cp $< $@
+
+# ── iOS device (arm64) ─────────────────────────────────────────────────────
+
+ios_device: priv/ios_device/libtflite_nif.a
+
+priv/ios_device/libtflite_nif.a: $(SRC)
+	@mkdir -p $(@D)
+	$(IOS_CC) -O2 -Wall -fPIC -c \
+	    -arch arm64 \
+	    -target arm64-apple-ios$(IOS_MIN_VER) \
+	    -isysroot $(IOS_DEV_SDK) \
+	    -fembed-bitcode-marker \
+	    $(STATIC_NIF_DEF) \
+	    -I$(ERLANG_PATH) \
+	    -F$(IOS_DEVICE_FW) -F$(IOS_DEVICE_CML) \
+	    $< -o $(@D)/tflite_nif.o
+	$(IOS_AR) rcs $@ $(@D)/tflite_nif.o
+	$(IOS_RANLIB) $@
+	@echo "built $@"
+	@nm $@ | grep tflite_nif_nif_init || (echo "ERROR: tflite_nif_nif_init symbol missing!" && exit 1)
+
+# ── iOS simulator (arm64 — apple silicon only; no x86_64) ──────────────────
+
+ios_sim: priv/ios_sim/libtflite_nif.a
+
+priv/ios_sim/libtflite_nif.a: $(SRC)
+	@mkdir -p $(@D)
+	$(IOS_CC) -O2 -Wall -fPIC -c \
+	    -arch arm64 \
+	    -target arm64-apple-ios$(IOS_MIN_VER)-simulator \
+	    -isysroot $(IOS_SIM_SDK) \
+	    $(STATIC_NIF_DEF) \
+	    -I$(ERLANG_PATH) \
+	    -F$(IOS_SIM_FW) -F$(IOS_SIM_CML) \
+	    $< -o $(@D)/tflite_nif.o
+	$(IOS_AR) rcs $@ $(@D)/tflite_nif.o
+	$(IOS_RANLIB) $@
+	@echo "built $@"
+	@nm $@ | grep tflite_nif_nif_init || (echo "ERROR: tflite_nif_nif_init symbol missing!" && exit 1)
+
+# ── Clean ──────────────────────────────────────────────────────────────────
 
 clean:
-	rm -rf priv/android priv/native
+	rm -rf priv/android priv/android_arm64 priv/ios_device priv/ios_sim priv/native

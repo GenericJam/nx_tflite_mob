@@ -1,11 +1,22 @@
 # nx_tflite_mob
 
-TensorFlow Lite NIF for Mob apps. Loads a `.tflite` model, attaches the
-NNAPI delegate, and runs inference. On the Moto G Power 5G (2024) /
-Dimensity 7020 / IMG PowerVR BXM-8-256 this hits **155 ms YOLOv8n
-forward via the MediaTek `mtk-gpu_shim` accelerator** — the headline
-that finally unlocks the chip after both NxVulkan (3.9s) and IREE (1.7s)
-stopped short.
+Cross-platform TensorFlow Lite NIF for Mob apps. Loads a `.tflite`
+model, attaches the right per-platform delegate (NNAPI on Android,
+CoreML on iOS), and runs inference. Same Elixir API, same `.tflite`
+model file on both OSes.
+
+On the Moto G Power 5G (2024) / Dimensity 7020 / IMG PowerVR BXM-8-256
+this hits **155 ms YOLOv8n forward via the MediaTek `mtk-gpu_shim`
+accelerator** — the headline that finally unlocks the chip after both
+NxVulkan (3.9s) and IREE (1.7s) stopped short.
+
+## Platforms
+
+| Target        | Delegate path                                | Output                                  |
+|---------------|----------------------------------------------|-----------------------------------------|
+| android_arm64 | XNNPACK CPU / NNAPI (vendor GPU + NPU HALs)  | `priv/android_arm64/libtflite_nif.{so,a}` |
+| ios_device    | XNNPACK CPU / CoreML (ANE) / Metal (GPU)     | `priv/ios_device/libtflite_nif.a`        |
+| ios_sim       | XNNPACK CPU (no ANE on simulator)            | `priv/ios_sim/libtflite_nif.a`           |
 
 ## Status
 

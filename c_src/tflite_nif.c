@@ -1,30 +1,41 @@
 // tflite_nif.c — Erlang NIF wrapping TensorFlow Lite for Mob apps.
 //
+// Cross-platform: Android (NNAPI / XNNPACK) + iOS (CoreML / XNNPACK).
+//
 // Exposes:
 //   load_module(model_bytes, opts)     -> {:ok, handle} | {:error, reason}
 //   call(handle, list_of_input_binaries) -> {:ok, list_of_output_binaries} | {:error, reason}
 //   release_module(handle)              -> :ok
 //
-// opts is a map (passed as keyword list converted to proplist):
-//   delegate:        "xnnpack" | "nnapi"               (default: "xnnpack")
-//   accelerator:     "mtk-neuron_shim" | "mtk-gpu_shim" | nil (only for nnapi)
-//   num_threads:     integer (XNNPACK)                  (default: 6)
-//   allow_fp16:      boolean (NNAPI)                    (default: true)
+// opts is a keyword list (proplist):
+//   delegate:        "xnnpack" | "nnapi" (android) | "coreml" (ios)  (default: "xnnpack")
+//   accelerator:     nnapi only — "mtk-gpu_shim" | "mtk-neuron_shim" | nil
+//   num_threads:     integer (XNNPACK)                                (default: 6)
+//   allow_fp16:      boolean (NNAPI)                                  (default: true)
+//   coreml_ane_only: boolean (CoreML — true = require Neural Engine)  (default: true)
 //
 // Designed for the YOLO live-detect flow: load once, call many times.
 // Output binaries are returned in the model's tensor order, raw bytes.
 
 #include <erl_nif.h>
-#include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__APPLE__)
+// iOS framework-style includes (resolves via -F<TFLITE_FRAMEWORKS_DIR>).
+#include <TensorFlowLiteC/c_api.h>
+#include <TensorFlowLiteC/c_api_experimental.h>
+#include <TensorFlowLiteC/common.h>
+#else
+// Android AAR layout — flat headers via -I<aar>/headers/tensorflow/lite/c.
 #include "tensorflow/lite/c/c_api.h"
 #include "tensorflow/lite/c/c_api_experimental.h"
 #include "tensorflow/lite/c/common.h"
+#endif
 
+#if defined(__ANDROID__)
 // NNAPI delegate struct (TFLite v2.16.1 layout — see
 // tensorflow/lite/delegates/nnapi/nnapi_delegate_c_api.h).
 typedef struct {
@@ -41,30 +52,65 @@ typedef struct {
 extern TfLiteNnapiDelegateOptions TfLiteNnapiDelegateOptionsDefault(void);
 extern TfLiteDelegate* TfLiteNnapiDelegateCreate(const TfLiteNnapiDelegateOptions* options);
 extern void TfLiteNnapiDelegateDelete(TfLiteDelegate* delegate);
+#endif
+
+#if defined(__APPLE__)
+// CoreML delegate (TFLite v2.17.0 layout — see
+// tensorflow/lite/delegates/coreml/coreml_delegate.h).
+typedef enum {
+    TfLiteCoreMlDelegateDevicesWithNeuralEngine = 0,
+    TfLiteCoreMlDelegateAllDevices = 1
+} TfLiteCoreMlDelegateEnabledDevices;
+
+typedef struct {
+    TfLiteCoreMlDelegateEnabledDevices enabled_devices;
+    int coreml_version;
+    int max_delegated_partitions;
+    int min_nodes_per_partition;
+} TfLiteCoreMlDelegateOptions;
+
+extern TfLiteDelegate* TfLiteCoreMlDelegateCreate(const TfLiteCoreMlDelegateOptions* options);
+extern void TfLiteCoreMlDelegateDelete(TfLiteDelegate* delegate);
+#endif
 
 // ── Resource ──────────────────────────────────────────────────────────────
+
+// Kind of explicitly-owned delegate handle (0=none/XNNPACK-implicit).
+#define DELEGATE_NONE   0
+#define DELEGATE_NNAPI  1
+#define DELEGATE_COREML 2
 
 typedef struct {
     TfLiteModel*              model;
     TfLiteInterpreter*        interp;
     TfLiteInterpreterOptions* opts;
     TfLiteDelegate*           delegate;
-    int                       delegate_is_nnapi;
+    int                       delegate_kind;
 } tflite_module_t;
 
 static ErlNifResourceType* RES_TYPE = NULL;
+
+static void free_owned_delegate(tflite_module_t* m) {
+    if (!m->delegate) return;
+    switch (m->delegate_kind) {
+#if defined(__ANDROID__)
+        case DELEGATE_NNAPI:  TfLiteNnapiDelegateDelete(m->delegate);  break;
+#endif
+#if defined(__APPLE__)
+        case DELEGATE_COREML: TfLiteCoreMlDelegateDelete(m->delegate); break;
+#endif
+        default: break;  // XNNPACK is bundled and implicit; nothing to free.
+    }
+    m->delegate = NULL;
+    m->delegate_kind = DELEGATE_NONE;
+}
 
 static void module_dtor(ErlNifEnv* env, void* obj) {
     (void)env;
     tflite_module_t* m = (tflite_module_t*)obj;
     if (m->interp)  TfLiteInterpreterDelete(m->interp);
     if (m->opts)    TfLiteInterpreterOptionsDelete(m->opts);
-    // The only delegate we create explicitly is NNAPI. XNNPACK is bundled
-    // into TFLite and attached implicitly when no other delegate is set,
-    // so we never own an XNNPACK delegate handle to free.
-    if (m->delegate && m->delegate_is_nnapi) {
-        TfLiteNnapiDelegateDelete(m->delegate);
-    }
+    free_owned_delegate(m);
     if (m->model)   TfLiteModelDelete(m->model);
     memset(m, 0, sizeof(*m));
 }
@@ -144,10 +190,12 @@ static ERL_NIF_TERM nif_load_module(ErlNifEnv* env, int argc, const ERL_NIF_TERM
     char accelerator[64] = "";
     int  num_threads = 6;
     int  allow_fp16 = 1;
+    int  coreml_ane_only = 1;
     proplist_get_string(env, argv[1], "delegate", delegate_name, sizeof(delegate_name));
     proplist_get_string(env, argv[1], "accelerator", accelerator, sizeof(accelerator));
     proplist_get_int(env, argv[1], "num_threads", &num_threads);
     proplist_get_bool(env, argv[1], "allow_fp16", &allow_fp16);
+    proplist_get_bool(env, argv[1], "coreml_ane_only", &coreml_ane_only);
 
     tflite_module_t* m = enif_alloc_resource(RES_TYPE, sizeof(tflite_module_t));
     memset(m, 0, sizeof(*m));
@@ -162,6 +210,7 @@ static ERL_NIF_TERM nif_load_module(ErlNifEnv* env, int argc, const ERL_NIF_TERM
     TfLiteInterpreterOptionsSetNumThreads(m->opts, num_threads);
 
     if (strcmp(delegate_name, "nnapi") == 0) {
+#if defined(__ANDROID__)
         TfLiteNnapiDelegateOptions nnopts = TfLiteNnapiDelegateOptionsDefault();
         nnopts.execution_preference = 1;  // fast_single_answer
         nnopts.allow_fp16 = allow_fp16;
@@ -172,8 +221,32 @@ static ERL_NIF_TERM nif_load_module(ErlNifEnv* env, int argc, const ERL_NIF_TERM
             enif_release_resource(m);
             return mk_error(env, "TfLiteNnapiDelegateCreate failed");
         }
-        m->delegate_is_nnapi = 1;
+        m->delegate_kind = DELEGATE_NNAPI;
         TfLiteInterpreterOptionsAddDelegate(m->opts, m->delegate);
+#else
+        enif_release_resource(m);
+        return mk_error(env, "nnapi delegate is android-only");
+#endif
+    } else if (strcmp(delegate_name, "coreml") == 0) {
+#if defined(__APPLE__)
+        TfLiteCoreMlDelegateOptions cmopts = {0};
+        cmopts.enabled_devices = coreml_ane_only
+            ? TfLiteCoreMlDelegateDevicesWithNeuralEngine
+            : TfLiteCoreMlDelegateAllDevices;
+        cmopts.coreml_version = 3;
+        cmopts.max_delegated_partitions = 0;
+        cmopts.min_nodes_per_partition = 2;
+        m->delegate = TfLiteCoreMlDelegateCreate(&cmopts);
+        if (!m->delegate) {
+            enif_release_resource(m);
+            return mk_error(env, "TfLiteCoreMlDelegateCreate failed (no ANE on device?)");
+        }
+        m->delegate_kind = DELEGATE_COREML;
+        TfLiteInterpreterOptionsAddDelegate(m->opts, m->delegate);
+#else
+        enif_release_resource(m);
+        return mk_error(env, "coreml delegate is ios-only");
+#endif
     }
     // xnnpack is default — no explicit delegate attach needed; TFLite uses it
     // automatically when no other delegate is bound.
@@ -269,11 +342,7 @@ static ERL_NIF_TERM nif_release_module(ErlNifEnv* env, int argc, const ERL_NIF_T
     }
     if (m->interp)  { TfLiteInterpreterDelete(m->interp);        m->interp = NULL; }
     if (m->opts)    { TfLiteInterpreterOptionsDelete(m->opts);    m->opts = NULL; }
-    // Only NNAPI is an owned delegate (XNNPACK is implicit/free).
-    if (m->delegate && m->delegate_is_nnapi) {
-        TfLiteNnapiDelegateDelete(m->delegate);
-    }
-    m->delegate = NULL;
+    free_owned_delegate(m);
     if (m->model)   { TfLiteModelDelete(m->model);                m->model = NULL; }
     return enif_make_atom(env, "ok");
 }
