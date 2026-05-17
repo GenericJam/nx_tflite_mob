@@ -1,0 +1,9 @@
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+*.ez
+*.beam
+priv/native/
+priv/android/
