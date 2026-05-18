@@ -1,7 +1,7 @@
 defmodule NxTfliteMob.MixProject do
   use Mix.Project
 
-  @version "0.0.2"
+  @version "0.0.3"
   @source_url "https://github.com/GenericJam/nx_tflite_mob"
 
   def project do
@@ -11,8 +11,7 @@ defmodule NxTfliteMob.MixProject do
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      description:
-        "TensorFlow Lite NIF for Mob apps — INT8 YOLO on Android NPU/GPU at real-time",
+      description: "TensorFlow Lite NIF for Mob apps — INT8 YOLO on Android NPU/GPU at real-time",
       package: package(),
       source_url: @source_url
     ]

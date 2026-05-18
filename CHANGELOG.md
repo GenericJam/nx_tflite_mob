@@ -7,6 +7,45 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.0.3]
+
+### Added
+- **Mac arm64 host build** for testing. `make mac` produces
+  `priv/mac/libtflite_nif.so` linked against a locally-built
+  `libtensorflowlite_c.dylib` (since TFLite has no Mac arm64 prebuilt
+  distribution). Configurable via `MAC_TFLITE_DIR` (defaults to
+  `~/.mob/cache/tflite-2.16.1-mac_arm64`).
+- **Test suite**: `test/test_helper.exs` + `test/nx_tflite_mob_test.exs`
+  with 16 tests covering module shape + package metadata (smoke tier,
+  always runs) and load_module / call / release_module / opt
+  normalisation (integration tier, auto-skipped when the host NIF
+  isn't built — keeps `mix test` green for users who only deploy to
+  phones).
+- **Test fixture**: `test/fixtures/add.bin` — a 544-byte TFLite model
+  (`output = 3*input`, 1×8×8×3 float32) lifted from the upstream
+  `tensorflow/lite/testdata/` set. Used by the integration tests to
+  prove the NIF executes a real model end-to-end on the host.
+- **`docs/build_mac_tflite.md`** — reproducible recipe for building the
+  Mac `libtensorflowlite_c.dylib` from TF v2.16.1 source via CMake.
+  Documents the `std::abs<T>` libc++ patch and the
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` env-var workaround for CMake-4
+  compatibility with TF's older `cmake_minimum_required` declarations.
+
+### Changed
+- `c_src/tflite_nif.c` — `__APPLE__` branches now refined with
+  `TARGET_OS_IPHONE || TARGET_OS_SIMULATOR` so Mac host builds skip the
+  iOS framework-style headers + Core ML delegate. Mac builds use the
+  same flat-path include layout as Android. No effect on iOS or
+  Android binaries.
+
+### Notes
+- The Mac build is for **host-side testing only**. The dylib is not
+  packaged into the Hex release; production phone builds use the
+  prebuilt Android AAR + iOS xcframework as before.
+- Tests run automatically in CI on macOS once the dylib is in
+  `~/.mob/cache/`. The cache step is a per-CI-runner one-time setup;
+  `make mac` reuses the cache afterwards.
+
 ## [0.0.2]
 
 ### Added

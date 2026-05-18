@@ -11,6 +11,10 @@
 #   ios_device      — ios_device .a (CoreML + Metal + XNNPACK)
 #   ios_sim         — ios_sim .a (XNNPACK only — simulator has no ANE)
 #   all_mobile      — android + ios_device + ios_sim
+#   mac             — mac_arm64 .so for HOST-side tests (XNNPACK only,
+#                     against a Bazel/CMake-built libtensorflowlite_c.dylib —
+#                     TFLite has no Mac arm64 prebuilt distribution). Build
+#                     the dylib via docs/build_mac_tflite.md first.
 
 ERLANG_PATH := $(shell erl -noshell -eval 'io:format("~s/erts-16.4/include", [code:root_dir()])' -s init stop)
 
@@ -39,6 +43,14 @@ IOS_CC         := $(shell xcrun --find clang)
 IOS_AR         := $(shell xcrun --find ar)
 IOS_RANLIB     := $(shell xcrun --find ranlib)
 
+# ── Mac arm64 (host-side tests) ────────────────────────────────────────────
+# Set MAC_TFLITE_DIR to the cache where you installed the dylib + headers.
+# Default matches docs/build_mac_tflite.md's recipe.
+MAC_TFLITE_DIR ?= $(HOME)/.mob/cache/tflite-2.16.1-mac_arm64
+MAC_TFLITE_HDRS := $(MAC_TFLITE_DIR)/include
+MAC_TFLITE_LIB  := $(MAC_TFLITE_DIR)/lib/libtensorflowlite_c.dylib
+MAC_CC          := $(shell xcrun --find clang)
+
 # ── Common ─────────────────────────────────────────────────────────────────
 SRC            := c_src/tflite_nif.c
 
@@ -50,7 +62,7 @@ STATIC_NIF_DEF := -DSTATIC_ERLANG_NIF_LIBNAME=tflite_nif
 # Targets
 # ============================================================================
 
-.PHONY: android ios_device ios_sim all_mobile clean
+.PHONY: android ios_device ios_sim mac all_mobile clean
 
 all_mobile: android ios_device ios_sim
 
@@ -126,7 +138,35 @@ priv/ios_sim/libtflite_nif.a: $(SRC)
 	@echo "built $@"
 	@nm $@ | grep tflite_nif_nif_init || (echo "ERROR: tflite_nif_nif_init symbol missing!" && exit 1)
 
+# ── Mac arm64 (host) ───────────────────────────────────────────────────────
+# Dynamic .so for `iex -S mix` + `mix test`. Links against the CMake-built
+# libtensorflowlite_c.dylib at MAC_TFLITE_DIR (default ~/.mob/cache/...).
+# Embedded rpath of $ORIGIN means the .so finds its TFLite dylib if you
+# copy it alongside; we also use -Wl,-rpath,<absolute-cache-path> so it
+# resolves out of the cache without copying.
+
+mac: priv/mac/libtflite_nif.so
+
+MAC_SDK := $(shell xcrun --sdk macosx --show-sdk-path)
+
+priv/mac/libtflite_nif.so: $(SRC)
+	@if [ ! -f "$(MAC_TFLITE_LIB)" ]; then \
+		echo "ERROR: $(MAC_TFLITE_LIB) not found."; \
+		echo "Build it first — see docs/build_mac_tflite.md"; \
+		exit 1; \
+	fi
+	@mkdir -p $(@D)
+	$(MAC_CC) -O2 -Wall -fPIC -dynamiclib \
+	    -isysroot $(MAC_SDK) \
+	    -I$(ERLANG_PATH) \
+	    -I$(MAC_TFLITE_HDRS) \
+	    -Wl,-rpath,$(MAC_TFLITE_DIR)/lib \
+	    -undefined dynamic_lookup \
+	    $< $(MAC_TFLITE_LIB) \
+	    -o $@
+	@echo "built $@"
+
 # ── Clean ──────────────────────────────────────────────────────────────────
 
 clean:
-	rm -rf priv/android priv/android_arm64 priv/ios_device priv/ios_sim priv/native
+	rm -rf priv/android priv/android_arm64 priv/ios_device priv/ios_sim priv/mac priv/native

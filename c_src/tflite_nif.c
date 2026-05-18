@@ -24,12 +24,17 @@
 #include <string.h>
 
 #if defined(__APPLE__)
-// iOS framework-style includes (resolves via -F<TFLITE_FRAMEWORKS_DIR>).
+#include <TargetConditionals.h>
+#endif
+
+#if defined(__APPLE__) && (TARGET_OS_IPHONE || TARGET_OS_SIMULATOR)
+// iOS / iOS-sim: framework-style headers via -F<TFLITE_FRAMEWORKS_DIR>.
 #include <TensorFlowLiteC/c_api.h>
 #include <TensorFlowLiteC/c_api_experimental.h>
 #include <TensorFlowLiteC/common.h>
 #else
-// Android AAR layout — flat headers via -I<aar>/headers/tensorflow/lite/c.
+// Mac host + Android: flat headers via -I (Android AAR's headers/ tree,
+// Mac's source-tree-derived include dir).
 #include "tensorflow/lite/c/c_api.h"
 #include "tensorflow/lite/c/c_api_experimental.h"
 #include "tensorflow/lite/c/common.h"
@@ -54,9 +59,12 @@ extern TfLiteDelegate* TfLiteNnapiDelegateCreate(const TfLiteNnapiDelegateOption
 extern void TfLiteNnapiDelegateDelete(TfLiteDelegate* delegate);
 #endif
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && (TARGET_OS_IPHONE || TARGET_OS_SIMULATOR)
 // CoreML delegate (TFLite v2.17.0 layout — see
 // tensorflow/lite/delegates/coreml/coreml_delegate.h).
+// iOS-only — Mac host builds skip this for now (Core ML on macOS via
+// TFLite is supported but we don't ship the delegate library for Mac
+// in the host test path).
 typedef enum {
     TfLiteCoreMlDelegateDevicesWithNeuralEngine = 0,
     TfLiteCoreMlDelegateAllDevices = 1
@@ -96,7 +104,7 @@ static void free_owned_delegate(tflite_module_t* m) {
 #if defined(__ANDROID__)
         case DELEGATE_NNAPI:  TfLiteNnapiDelegateDelete(m->delegate);  break;
 #endif
-#if defined(__APPLE__)
+#if defined(__APPLE__) && (TARGET_OS_IPHONE || TARGET_OS_SIMULATOR)
         case DELEGATE_COREML: TfLiteCoreMlDelegateDelete(m->delegate); break;
 #endif
         default: break;  // XNNPACK is bundled and implicit; nothing to free.
@@ -228,7 +236,7 @@ static ERL_NIF_TERM nif_load_module(ErlNifEnv* env, int argc, const ERL_NIF_TERM
         return mk_error(env, "nnapi delegate is android-only");
 #endif
     } else if (strcmp(delegate_name, "coreml") == 0) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) && (TARGET_OS_IPHONE || TARGET_OS_SIMULATOR)
         TfLiteCoreMlDelegateOptions cmopts = {0};
         cmopts.enabled_devices = coreml_ane_only
             ? TfLiteCoreMlDelegateDevicesWithNeuralEngine
