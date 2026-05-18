@@ -7,6 +7,49 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.0.4]
+
+### Changed
+- **Docs rewrite.** This release is docs-only — no source-level
+  changes. Anyone landing on
+  [hexdocs.pm/nx_tflite_mob](https://hexdocs.pm/nx_tflite_mob/0.0.4)
+  can now follow end-to-end without having to ask "is this an Nx
+  backend?" or "how do I decode the bytes?".
+
+  - `@moduledoc` rewritten with a clear "this is NOT an Nx backend"
+    lede + per-platform delegate sections (Core ML, NNAPI, XNNPACK,
+    Metal-planned) + explicit input/output byte-layout tables for
+    common models + an "optional Nx interop" section showing how to
+    compose with `EMLX.Backend` / `Nx.from_binary/3` if desired.
+  - `README.md` rewritten as the landing doc. Drops the stale "NIF
+    loads inside Mob's running BEAM ⏸ blocked" status (resolved
+    end-to-end in 0.0.3 via mob_dev's static-NIF integration). Adds
+    "Two ways to use it" — `mix mob.enable tflite` for Mob apps vs
+    `make {android,ios_device,ios_sim,mac}` for standalone Elixir
+    apps. Per-platform perf table now includes the measured iPhone
+    SE A15 / Moto BXM-8-256 numbers.
+  - New guide: `guides/yolo_walkthrough.md` — complete YOLOv8n
+    end-to-end walkthrough from model acquisition to bounding boxes,
+    with the full per-stage timing breakdown that took our Android
+    live-YOLO loop from 0.5 FPS to 3.9 FPS. Includes the pure-BEAM
+    INT8 decoder (130× faster than the equivalent Nx.BinaryBackend
+    decode) and the camera-format choice rationale per platform.
+  - New guide: `guides/delegates.md` — picking a delegate per
+    platform. Documents the "INT8 + Core ML doesn't work" trap
+    (0/256 nodes delegate), how to discover NNAPI accelerators on
+    Android, why `mtk-neuron_shim` NPU loses to `mtk-gpu_shim` GPU
+    for YOLO-class models (post-processing CPU fallback dominates),
+    and when to pick XNNPACK CPU even when GPU/NPU is available.
+  - `docs()` config now groups extras into "Guides" and "Build
+    recipes" sidebar sections.
+  - Tightened function `@doc`s on `load_module/2`, `call/2`,
+    `release_module/1` — explicit about input/output byte semantics +
+    error conditions.
+
+### Notes
+- No code changes. The 0.0.3 NIF binary is bit-identical to the
+  0.0.4 NIF. Upgrade is a no-op for `mix.lock`.
+
 ## [0.0.3]
 
 ### Added

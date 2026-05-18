@@ -1,7 +1,7 @@
 defmodule NxTfliteMob.MixProject do
   use Mix.Project
 
-  @version "0.0.3"
+  @version "0.0.4"
   @source_url "https://github.com/GenericJam/nx_tflite_mob"
 
   def project do
@@ -11,7 +11,8 @@ defmodule NxTfliteMob.MixProject do
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      description: "TensorFlow Lite NIF for Mob apps — INT8 YOLO on Android NPU/GPU at real-time",
+      description:
+        "TensorFlow Lite from BEAM with full vendor accelerator access — Apple Neural Engine on iOS, MediaTek/Qualcomm GPU+NPU HALs on Android. Not an Nx backend — runs pre-compiled .tflite models.",
       package: package(),
       source_url: @source_url,
       docs: docs()
@@ -38,7 +39,7 @@ defmodule NxTfliteMob.MixProject do
         "GitHub" => @source_url,
         "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
       },
-      files: ~w(lib c_src Makefile mix.exs README.md CHANGELOG.md LICENSE)
+      files: ~w(lib c_src Makefile mix.exs README.md CHANGELOG.md LICENSE docs guides)
     ]
   end
 
@@ -48,7 +49,13 @@ defmodule NxTfliteMob.MixProject do
       extras: [
         "README.md",
         "CHANGELOG.md",
-        "docs/build_mac_tflite.md"
+        "guides/yolo_walkthrough.md": [title: "YOLO end-to-end walkthrough"],
+        "guides/delegates.md": [title: "Picking a delegate"],
+        "docs/build_mac_tflite.md": [title: "Building libtensorflowlite_c.dylib for Mac"]
+      ],
+      groups_for_extras: [
+        Guides: ~r/guides\/.+/,
+        "Build recipes": ~r/docs\/.+/
       ],
       source_url: @source_url
     ]
